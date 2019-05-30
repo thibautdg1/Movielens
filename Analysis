@@ -1,0 +1,90 @@
+# remove some items no longer required to reduce memory footprint
+rm(removed, test_index)
+
+head(edx)
+
+# Check for any missing values
+anyNA(edx)
+
+# Quick summary of the dataset
+summary(edx)
+
+# We are dealing with ~70000 unique users giving ratings to ~ 10700 different movies
+edx %>% summarize(n_users = n_distinct(userId), n_movies = n_distinct(movieId))
+
+# 10 different rating scores, lowest = 0.5, highest = 5
+unique(edx$rating)
+
+# Some movies are rated more often than others as showed by the plot
+edx %>% 
+  count(movieId) %>% 
+  ggplot(aes(n)) + 
+  geom_histogram(bins = 30, binwidth=0.2, color="black", show.legend = FALSE, aes(fill = cut(n, 100))) + 
+  scale_x_log10() + 
+  ggtitle("Movies Rated")
+
+# Review Training rating distribution
+edx %>% 
+  ggplot(aes(rating)) + 
+  geom_histogram(binwidth=0.2, color="darkblue", fill="lightblue") + 
+  ggtitle("Rating Distribution (Training")
+
+# Review Validation rating distribution
+validation %>% 
+  ggplot(aes(rating)) + 
+  geom_histogram(binwidth=0.2, color="darkblue", fill="lightblue") +  
+  ggtitle("Rating Distribution (Validation")
+
+# The result is the distributions are similar
+
+# Extract release year from title into a separate field
+edx <- edx %>% mutate(releaseyear = as.numeric(str_extract(str_extract(title, "[/(]\\d{4}[/)]$"), regex("\\d{4}"))),title = str_remove(title, "[/(]\\d{4}[/)]$"))
+
+# Compute the number of movies per year/decade
+movies_per_year <- edx %>%
+  select(movieId, releaseyear) %>% 
+  group_by(releaseyear) %>% 
+  summarise(count = n())  %>% 
+  arrange(releaseyear)
+
+# Review
+movies_per_year %>%
+  ggplot(aes(x = releaseyear, y = count)) +
+  geom_line(color="blue") 
+
+# Compute the most popular movie genres year by year
+genresByYear <- edx %>% 
+  separate_rows(genres, sep = "\\|") %>% 
+  select(movieId, releaseyear, genres) %>% 
+  group_by(releaseyear, genres) %>% 
+  summarise(count = n()) %>% arrange(desc(releaseyear))
+
+# We can show that certain genres being more popular during those periods
+ggplot(genresByYear, aes(x = releaseyear, y = count)) + 
+  geom_col(aes(fill = genres), position = 'dodge') + 
+  theme_hc() + 
+  ylab('Number of Movies') + 
+  ggtitle('Popularity per year by Genre')
+
+# Visualization of the number of times each user has reviewed movies  
+edx %>% count(userId) %>% 
+  ggplot(aes(n)) + 
+  geom_histogram(bins = 30, binwidth=0.2, color="black", show.legend = FALSE, aes(fill = cut(n, 100))) + 
+  scale_x_log10() + 
+  ggtitle("User Reviews")
+# Result : most users have reviewed less than 200 movies
+
+# Year vs rating
+edx %>% group_by(releaseyear) %>%
+  summarize(rating = mean(rating)) %>%
+  ggplot(aes(releaseyear, rating)) +
+  geom_point() +
+  theme_hc() + 
+  geom_smooth() +
+  ggtitle("Release Year vs. Rating")
+
+# Remove
+rm(movies_per_year, genresByYear)
+
+# Given we have 10 possible ratings
+# Give us 1/10 odds, or 10% accuracy
