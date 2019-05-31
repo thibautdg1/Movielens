@@ -1,0 +1,78 @@
+# Split along userId:
+x <- unique(edx$userId)
+
+# Adjust to 0:10/10:
+q <- split(x, cut(x, quantile(x, prob = 0:20 / 20, names = FALSE), include = TRUE))
+rm(x)
+
+main_model <- NULL # build it up as we go
+
+for (c in 1:20) { 
+  chunk <- edx %>% filter(edx$userId %in% unlist(q[c])) 
+  chunk <- data.table(chunk)
+  names(chunk) <- c("user_id", "item_id", "rating")
+  chunk$user_id <- as.character(chunk$user_id)
+  chunk$item_id <- as.character(chunk$item_id)
+  setkey(chunk, user_id, item_id)
+  chunk <- normalize_ratings(chunk)
+  
+  model <- build_model(chunk$ratings) # Train
+  
+  if (is.null(main_model)) {
+    main_model <- model_final
+  } else {
+    main_model <- rbind(main_model, model_final)
+  }
+  rm(model_final, chunk)
+  gc()
+}
+
+rm(q) 
+gc()
+
+# Save this model
+
+names(edx) <- c("user_id", "item_id", "rating")
+edx$user_id <- as.character(edx$user_id)
+edx$item_id <- as.character(edx$item_id)
+edx <- data.table(edx)
+setkey(edx, user_id, item_id)
+edx <- normalize_ratings(edx)
+
+names(main_model) <- c("user_id", "item_id", "b", "support")
+
+scoring <- validation$rating
+
+validation$userId <- as.character(validation$userId)
+validation$movieId <- as.character(validation$movieId)
+
+names(validation) <- c("user_id", "item_id", "rating")
+
+# Predict using our model, and training ratings:
+prediction <- predict_slopeone(main_model, validation[ , 1:2], edx$ratings)
+unnormalized_predictions <- unnormalize_ratings(normalized = edx, ratings = predictions)
+
+# Round predictions to nearest 0.5 but we limit it inside range 0.5 to 5.
+a <- unnormalized_predictions$predicted_rating
+a <- ceiling(a / 0.5) * 0.5
+a[a <= 0.5] <- 0.5
+a[a >= 5] <- 5
+
+# check RMSE:
+rmse_model <- RMSE(scoring, a)
+rmse_model # 0.192
+
+# Generate our submission file:
+names(validation) <- c("userId", "movieId", "rating")
+validation$userId <- as.integer(validation$userId)
+validation$movieId <- as.integer(validation$movieId)
+#write.csv(validation %>% select(userId, movieId) %>% mutate(rating = a), "submission.csv", na = "", row.names=FALSE)
+
+# Accuracy:
+a <- as.factor(a)
+b <- as.factor(scoring) # actual true results we stored earlier
+summarization = confusionMatrix(a, b)
+summarization # Accuracy: 85.14%
+
+# Clean up
+rm(edx, validation, mainModel, scoring, predictions, unnormalized_predictions)
