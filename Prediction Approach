@@ -1,0 +1,314 @@
+# Loss-function computed the Residual Mean Squared Error ("typical error") as measure of accuracy. 
+# The value is the typical error in star rating we would make
+RMSE <- function(true_ratings, predicted_ratings){
+  sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+
+# Predict of a new rating being the average rating of all movies in the training dataset.
+mu <- mean(edx$rating)
+baseline_RMSE <- RMSE(edx$rating, mu)
+# Result: the mean movie rating is > 3.5.
+
+# First rmse
+naive_rmse <- RMSE(temp$rating, mu) # 1.06
+
+# Drafting a table for recording our approaches and the RMSEs generated.
+rmse_results <- data_frame(method = "First Model", RMSE = naive_rmse)
+
+# Thanks to data, we know that some movies are just generally rated higher than others. 
+# The SE error for the average is at most 0.05. 
+# Plot of these averages:
+edx %>% group_by(movieId) %>% 
+  filter(n()>=1000) %>% 
+  summarize(avg_rating = mean(rating)) %>% 
+  qplot(avg_rating, geom = "histogram", color = I("black"), fill=I("navy"), bins=30, data = .)
+# Result: we see much greater variability than 0.05.
+
+# So it is now possible to enhance our previous model in adding a term to represent average ranking for a movie: 
+movie_means <- edx %>% 
+  group_by(movieId) %>% 
+  summarize(b_i = mean(rating - mu))
+
+# Improvement of our model: 
+joined <- temp %>% 
+  left_join(movie_means, by='movieId')
+any(is.na(joined$b_i))
+
+# Form a prediction
+predicted_ratings <- mu + joined$b_i
+model2_rmse <- RMSE(predicted_ratings, temp$rating)
+rmse_results <- bind_rows(rmse_results,
+                          data_frame(method ="Second Model",  
+                                     RMSE = model2_rmse ))
+
+# Exploration of mistakes. 
+temp %>% mutate(prediction = predicted_ratings, 
+                residual   = predicted_ratings - temp$rating) %>%
+  arrange(desc(abs(residual))) %>% 
+  left_join(movies) %>%  
+  select(title, prediction, residual) %>% slice(1:10) 
+
+qplot(b_i, geom = "histogram", color = I("black"), fill=I("navy"), bins=25, data = movie_means)
+
+# We see many of them have large predictions. 
+# Visualization of top 10 worst and best movies.
+movie_means <-  left_join(movie_means, movies) 
+
+# Top ten:
+arrange(movie_means, desc(b_i)) %>% 
+  mutate(prediction = mu + b_i) %>%
+  select(title, prediction) %>% 
+  slice(1:10)
+
+# Bottom ten:
+arrange(movie_means, b_i) %>% 
+  mutate(prediction = mu + b_i) %>%
+  select(title, prediction) %>% 
+  slice(1:10)
+
+# But it is quite obscure. 
+# Frequency of rating of these movies:
+edx %>%
+  count(movieId) %>%
+  left_join(movie_means) %>%
+  arrange(desc(b_i)) %>% 
+  mutate(prediction = mu + b_i) %>%
+  select(title, prediction, n) %>% 
+  slice(1:10)
+
+edx %>%
+  count(movieId) %>%
+  left_join(movie_means) %>%
+  arrange(b_i) %>% 
+  mutate(prediction = mu + b_i) %>%
+  select(title, prediction, n) %>% 
+  slice(1:10) 
+
+# Result: the supposed "best" and "worst" movies were rated by very few users but these movies were mostly obscure. 
+# Let's compute these with a regularized estimation of $b_i$ with lambda=5:
+lambda <- 5
+mu <- mean(edx$rating)
+movie_reg_means <- edx %>% 
+  group_by(movieId) %>% 
+  summarize(b_i = sum(rating - mu)/(n()+lambda), n_i = n()) %>%
+  left_join(movies) 
+
+# Top 10 best
+edx %>%
+  count(movieId) %>%
+  left_join(movie_reg_means) %>%
+  arrange(desc(b_i)) %>% 
+  mutate(prediction = mu + b_i) %>%
+  select(title, prediction, n) %>% 
+  slice(1:10) 
+
+# Top ten worst
+edx %>%
+  count(movieId) %>%
+  left_join(movie_reg_means) %>%
+  arrange(b_i) %>% 
+  mutate(prediction = mu + b_i) %>%
+  select(title, prediction, n) %>% 
+  slice(1:10) 
+
+# Improvement of our results
+joined <- temp %>% 
+  left_join(movie_reg_means, by='movieId') %>% 
+  replace_na(list(b_i=0))
+
+predicted_ratings <- mu + joined$b_i
+model3_reg_rmse <- RMSE(predicted_ratings, temp$rating)
+
+rmse_results <- bind_rows(rmse_results,
+                          data_frame(method="Third Model Lambda=5",  
+                                     RMSE = model3_reg_rmse ))
+
+# Visualization of these predictions with small b_i
+data_frame(original = movie_means$b_i, 
+           regularlized = movie_reg_means$b_i, 
+           n = movie_reg_means$n_i) %>%
+  ggplot(aes(original, regularlized, size=log10(n))) + 
+  geom_point(shape=1, alpha=0.5)
+
+# With other values of lambda:
+lambdas <- seq(0, 8, 0.25)
+mu <- mean(edx$rating)
+tmp <- edx %>% 
+  group_by(movieId) %>% 
+  summarize(sum = sum(rating - mu), n_i = n())
+
+rmses <- sapply(lambdas, function(l){
+  joined <- temp %>% 
+    left_join(tmp, by='movieId') %>% 
+    mutate(b_i = sum/(n_i+l)) %>%
+    replace_na(list(b_i=0))
+  predicted_ratings <- mu + joined$b_i
+  return(RMSE(predicted_ratings, temp$rating))
+})
+
+qplot(lambdas, rmses)  
+lambdas[which.min(rmses)]
+
+# We gain a slight improvement
+# So we can compute the average rating for user u, for those that have rated over 100 movies. 
+edx %>% 
+  group_by(userId) %>% 
+  summarize(b_u = mean(rating)) %>% 
+  filter(n() >= 100) %>%
+  ggplot(aes(b_u)) + 
+  geom_histogram(bins = 30, binwidth=0.2, color = I("black"), fill=I("navy"), show.legend = FALSE)
+  
+# Result: there is substantial variability across users as well: some users are harder than others in their ratings. 
+# For this reason, it's better to estimate b_u taking into account the b_i. 
+
+# Using now lambda_2 = 5:
+lambda_2 <- 5
+user_reg_means <- edx %>% 
+  left_join(movie_reg_means) %>%
+  mutate(resids = rating - mu - b_i) %>% 
+  group_by(userId) %>%
+  summarize(b_u = sum(resids)/(n()+lambda_2))
+
+joined <- temp %>% 
+  left_join(movie_reg_means, by='movieId') %>% 
+  left_join(user_reg_means, by='userId') %>% 
+  replace_na(list(b_i=0, b_u=0))
+
+predicted_ratings <- mu + joined$b_i + joined$b_u
+model4_reg_rmse <- RMSE(predicted_ratings, temp$rating)
+rmse_results <- bind_rows(rmse_results,
+                          data_frame(method="Fourth Model LSE",  
+                                     RMSE = model4_reg_rmse ))
+# RMSE remains the same.
+
+# Compute the accuracy of this model
+a <- predicted_ratings
+a <- ceiling(a / 0.5) * 0.5
+a[a <= 0.5] <- 0.5
+a[a >= 5] <- 5
+a <-as.factor(a)
+summarization = confusionMatrix(a, as.factor(temp$rating))
+summarization$overall[1] # 22.5 %
+
+# This model is not also going to get us very far. There are several known approaches for predicting recommended (PCA, SVD, Random Forest, ...).
+# The main challenge here is to use the huge dataset size itself (1M MovieLens) 
+# So for this project and dataset size we need to find an algorithm that allows us to split the dataset into trainable chunks.
+
+# Remove these next objects:
+rm(joined, summarization, movie_means, movie_reg_means, movielens, movies, ratings, rmse_results, temp, tmp, user_reg_means, a, predicted_ratings) 
+gc()
+
+# Drop unused columns
+edx <- edx[,-c(4,5,6,7)] 
+validation <- validation[,-c(4,5,6)]
+
+# Remove users and movies not in validation set
+# Save time and RAM
+edx <- edx %>% 
+  semi_join(validation, by = "userId") %>%
+  semi_join(validation, by = "movieId")
+
+# Input: A data table of ratings. Should contain 3 columns: user_id, item_id and rating.
+# Returns: A data table of (item_id1, item_id2, b, support) where b is the average rating difference of 'item 2 rating' - 'item 1 rating',
+# and support is the number of ratings used to compute b.
+model <- function(ratings, ...) {
+  if (NROW(ratings) == 0) {
+    return(data.table(data.frame(item_id1=c(), item_id2=c(), b=c(), support=c())))
+  }
+  
+  difference_per_user <- dlply(ratings, .(user_id), function(rows) {
+    if (NROW(rows) > 1) {
+      pair_rows_nums <- subset(expand.grid(rows_num1=1:NROW(rows), rows_num2=1:NROW(rows)),
+        rows_num1 != rows_num2 & rows[rows_num1, 'item_id'] != rows[rows_num2, 'item_id'])
+      data.table(item_id1 = rows[pair_rows_nums$rows_num1, 'item_id'],
+        item_id2 = rows[pair_rows_nums$rows_num2, 'item_id'],
+        difference = rows[pair_rows_nums$rows_num2, 'rating'] - rows[pair_rows_nums$rows_num1, 'rating'])
+    }
+  }, ...)
+  # But ddply is slow when merging data frames within list while rbindlist faster:
+  difference_per_user <- rbindlist(difference_per_user)
+  if (NROW(difference_per_user) == 0) {
+    return(data.table(data.frame(item_id1=c(), item_id2=c(), b=c(), support=c())))
+  }
+  difference_per_user$item_id1 <- as.character(difference_per_user$item_id1)
+  difference_per_user$item_id2 <- as.character(difference_per_user$item_id2)
+ 
+ # If we now compute the average of the difference between both items:
+  model_final <- difference_per_user[,
+                               list(b=mean(diff), support=NROW(diff)),
+                               by='item_id1, item_id2']
+  setkey(model_final, item_id1, item_id2)
+  return(model_final)
+}
+
+# Input: A data table of ratings. Should contain 3 columns: user_id, item_id and rating.
+normal_ratings <- function(ratings, ...) {
+  result <- list()
+  result$global <- ratings[, mean(rating)]
+  result$user <- ratings[, list(mean_rating = mean(rating)), by = 'user_id']
+  result$item <- ratings[, list(mean_rating = mean(rating)), by = 'item_id']
+  
+  ratings$rating <- ratings$rating - result$global
+  setkey(result$user, user_id)
+  ratings$rating <- ratings$rating - result$user[J(ratings$user_id), ]$mean_rating
+  setkey(result$item, item_id)
+  ratings$rating <- ratings$rating - result$item[J(ratings$item_id), ]$mean_rating
+  result$ratings <- ratings
+  return(result)
+}
+
+# Inputs: Data table made by model, data table (user_id & item_id) to predict ratings and a data table of ratings.
+# Returns: A data table with user_id, item_id & predicted_rating.
+predict_model <- function(model_final, targets, ratings, ...) {
+  setkey(ratings, user_id)
+  adply(targets, 1, function(row) {
+          data.frame(
+            predict_rating = predict_model_user(model_final, row$item_id, ratings[J(row$user_id), ]))
+        }, ...)
+}
+
+# Inputs: A data table made by model_final, target item id to predict rating, data table of user's ratings.
+# Returns: predicted rating score.
+predict_model_user <- function(model_final, target_item_id, ratings) {
+  # If target_id is already rated by the user, return that rating.
+  already_rated <- subset(ratings, ratings$item_id == target_item_id)
+  if (NROW(already_rated) == 1) {
+    return(already_rated$rating)
+  } else if (NROW(already_rated) > 1) {
+    warning(paste(target_item_id,
+                  ' is already rated by user, but there are multiple ratings.'))
+    return(already_rated[1, ]$rating)
+  }
+  if (NROW(model) == 0) {
+    return(NA)
+  }
+  
+  # We now compute weighted average ratings:
+  ratings <- rename(ratings, c('item_id'= "item_id1"))
+  ratings <- cbind(ratings, item_id2 = target_item_id)
+  setkey(ratings, item_id1, item_id2)
+  joined <- model[ratings, ]
+  joined <- joined[complete.cases(joined), ]
+  if (NROW(joined) == 0) {
+    return(NA)
+  }
+  return(sum(joined[, (b + rating) * support]) /
+           sum(joined[, sum(support)]))
+}
+
+# Inputs: normalization information generated by normalize_ratings and a data table of ratings.
+# Returns: a ratings' data table after un-normalization.
+unnormalize_ratings <- function(normalized, ratings) {
+  ratings$predicted_rating <- ifelse(is.na(ratings$predicted_rating), 0,
+                                     ratings$predicted_rating)
+  ratings$predicted_rating <- ratings$predicted_rating + normalized$global
+  setkey(normalized$user, user_id)
+  user_mean <- normalized$user[J(ratings$user_id), ]$mean_rating
+  ratings$predicted_rating <- ratings$predicted_rating +
+    ifelse(!is.na(user_mean), user_mean, 0)
+  setkey(normalized$item, item_id)
+  item_mean <- normalized$item[J(ratings$item_id), ]$mean_rating
+  ratings$predicted_rating <- ratings$predicted_rating +
+    ifelse(!is.na(item_mean), item_mean, 0)
+  return(ratings)
+}
